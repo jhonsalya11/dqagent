@@ -1,87 +1,102 @@
-# DQ Agent — AI Data-Quality Agent (MVP)
+# dqagent
 
-MVP rule-based validator untuk dataset CSV publik yang berantakan
-(open-government/NGO/riset). Lihat `docs/research/2026-10-12-open-data-quality-deep-research.md`
-untuk konteks lengkap persona, rule set, dan mockup UI.
+Rule-based data quality checker for messy public CSV datasets (open
+government data, NGO exports, research data dumps). Finds the usual
+suspects — missing values, duplicate rows, ambiguous dates, inconsistent
+units, mixed casing, outliers — and gives you an explainable report you
+review before changing anything. **It never auto-deletes or auto-edits
+your data.**
 
-Status: **10/10 rule dari deep research sudah diimplementasikan** (rule-based,
-bukan LLM). Semantic/LLM-based check (deteksi makna duplikat yang lebih canggih)
-tetap direncanakan untuk tahap selanjutnya SETELAH budget cap disetujui terpisah.
+## Why
 
-## Rule yang sudah diimplementasikan (10/10)
+Open datasets from government portals and small organizations are
+routinely messy: inconsistent date formats, blank cells written five
+different ways, duplicate rows, typos in region names. Enterprise
+data-quality tools (Informatica, Alation, Great Expectations) are built
+for big teams with infrastructure budgets. `dqagent` is a small, free,
+single-file-output tool for the person who just has a CSV and needs to
+know what's wrong with it before publishing or analyzing it.
 
-1. Format tanggal konsisten → normalisasi ke ISO-8601, flag yang ambigu
-2. Missing value → deteksi sel kosong/variasi penulisan ("", "N/A", "-", "NULL")
-3. Duplikat baris (exact match)
-4. Tipe data tidak konsisten per kolom (angka ketulis sebagai teks)
-5. Encoding/karakter aneh → deteksi mojibake / replacement character
-6. Whitespace & casing tidak konsisten pada kolom teks
-7. Validasi range/outlier → metode IQR (1.5x fence) untuk kolom numerik
-8. Konsistensi kode wilayah → deteksi kemungkinan typo/variasi penulisan
-   pada kolom provinsi/kabupaten/kota (fuzzy match sederhana)
-9. Field wajib tidak kosong → **butuh schema eksplisit** dari pemanggil
-   (`--required kolom1,kolom2` di CLI), tidak otomatis menebak sendiri
-10. Konsistensi unit → deteksi campuran unit dalam 1 kolom (mis. "kg" vs "gram")
+## Install
 
-## Pakai
-
-### Lewat `python -m` (tanpa install)
 ```bash
-cd product
-pip install -r requirements.txt
-python -m dqagent.cli path/to/dataset.csv
-python -m dqagent.cli path/to/dataset.csv --json laporan.json
-python -m dqagent.cli path/to/dataset.csv --html review.html
-python -m dqagent.cli path/to/dataset.csv --required nama,tanggal_lahir
-```
-
-### Sebagai command terinstall (`pip install -e .`)
-```bash
-cd product
+pip install dqagent   # once published to PyPI
+# or, from source:
+git clone https://github.com/jhonsalya11/dqagent.git
+cd dqagent
 pip install -e .
-dqagent path/to/dataset.csv --html review.html
 ```
-Terverifikasi jalan di virtualenv bersih — entry point `dqagent` terdaftar
-lewat `pyproject.toml` (`[project.scripts]`).
 
-Output: ringkasan console, laporan JSON lengkap, atau **UI review interaktif**
-(`--html`) — file HTML statis, buka langsung di browser, tidak butuh server.
-TIDAK ada auto-delete — sesuai prinsip "explainable, human review per-item"
-di mockup UI.
-
-### UI Review (`--html`)
-
-Implementasi nyata dari mockup ASCII di deep research doc: tabel semua isu,
-filter per rule, dan tombol **Terima / Tolak / Belum** per baris. Keputusan
-disimpan di `localStorage` browser (per nama dataset) — **tidak ada server,
-tidak ada data terkirim ke mana pun**, nol spend. Tombol "Export keputusan"
-download hasil reviewnya sebagai JSON.
-
-Keterbatasan: keputusan tersimpan di browser lokal reviewer, bukan di
-database bersama — cocok buat 1 orang review 1 file, belum cocok untuk tim
-yang perlu lihat keputusan satu sama lain (itu butuh backend, fase berikutnya
-kalau diperlukan).
-
-## Keterbatasan yang diketahui (jujur, biar nggak over-claim)
-
-- Rule 7 (outlier) & 10 (unit) pakai heuristik sederhana, bisa false
-  positive/negative pada dataset kecil (<4 baris numerik tidak dicek)
-- Rule 8 (region) pakai fuzzy match karakter sederhana, bukan database
-  resmi kode wilayah BPS — cocok buat nangkap typo kasar, bukan validasi
-  administratif resmi
-- Rule 9 (required field) sengaja tidak otomatis — "wajib" itu keputusan
-  skema yang nggak bisa ditebak dari data saja. **Diverifikasi dengan
-  dataset nyata** (lihat `docs/research/2026-10-12-required-field-verification.md`):
-  0 false positive/negative pada 2 skenario uji
-- UI review masih client-side only (localStorage), belum ada LLM/semantic check
-
-## Test
+## Usage
 
 ```bash
-cd product
+# Quick console summary
+dqagent mydata.csv
+
+# Full issue list as JSON
+dqagent mydata.csv --json report.json
+
+# Interactive HTML review (open in any browser, no server needed)
+dqagent mydata.csv --html review.html
+
+# Flag rows missing a value in specific required columns
+dqagent mydata.csv --required name,date_of_birth
+```
+
+## What it checks (10 rules)
+
+| # | Rule | What it catches |
+|---|------|------------------|
+| 1 | Date format | Ambiguous dates (`03/04/2026` — March 4 or April 3?) |
+| 2 | Missing values | Blank cells, and inconsistent "empty" tokens (`N/A`, `-`, `null`...) |
+| 3 | Duplicate rows | Exact-match duplicates |
+| 4 | Type consistency | A mostly-numeric column with stray text values |
+| 5 | Encoding | Mojibake / replacement-character artifacts |
+| 6 | Whitespace & casing | Trailing spaces, inconsistent capitalization |
+| 7 | Outliers | Numeric values far outside the normal range (IQR method) |
+| 8 | Region name typos | Fuzzy-match variants in province/city/region columns |
+| 9 | Required fields | Opt-in: flags blanks in columns YOU declare required |
+| 10 | Unit consistency | Mixed units in one column (e.g. "kg" vs "gram") |
+
+## How the HTML review works
+
+`--html` generates one self-contained `.html` file: a table of every
+issue found, with filter buttons per rule and Accept/Reject buttons per
+row. Your decisions are saved in the browser's `localStorage` (keyed by
+filename) — **nothing is sent to a server**, there's no backend. An
+export button lets you download your decisions as JSON. Good for one
+person reviewing one dataset at a time; not (yet) built for multi-user
+review of the same file.
+
+## Known limitations (we'd rather you know than find out)
+
+- Outlier and unit-consistency checks use simple heuristics — good at
+  catching obvious problems, not a substitute for domain-specific rules
+- Region-typo detection is a cheap fuzzy match, not an official
+  administrative code database (e.g. not validated against Indonesia's
+  official BPS region codes)
+- Required-field checking never guesses on its own — you must pass
+  `--required` explicitly
+- No semantic/LLM-based checks — purely rule-based, which also means: no
+  API calls, no cost, works fully offline
+
+## Tested against real data
+
+Validated against a real NYC Dept. of Buildings permit dataset (500 rows,
+95 columns) during development — found and fixed 3 real false-positive
+bugs in the process (see commit history). Issue count on that same
+dataset dropped from 16,454 (before fixes) to 3,842 (after), with no loss
+of genuine detections.
+
+## Running tests
+
+```bash
+pip install pytest
 pytest tests/ -v
 ```
 
-18 test, semua rule + report generator punya minimal 1 test dengan fixture
-dataset realistis, plus regression test untuk bug yang ditemukan dari
-pengujian dataset nyata.
+18 tests, covering all 10 rules plus the HTML report generator.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
