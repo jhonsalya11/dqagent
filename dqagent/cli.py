@@ -6,7 +6,7 @@ import json
 import sys
 from collections import Counter
 
-from .rules import run_all_rules
+from .rules import check_required_fields, run_all_rules
 
 
 def load_csv(path: str) -> tuple[list[dict], list[str]]:
@@ -20,16 +20,24 @@ def load_csv(path: str) -> tuple[list[dict], list[str]]:
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
     if not argv:
-        print("Usage: python -m dqagent.cli path/to/dataset.csv [--json out.json]")
+        print(
+            "Usage: python -m dqagent.cli path/to/dataset.csv "
+            "[--json out.json] [--required col1,col2]"
+        )
         return 1
 
     path = argv[0]
     json_out = None
     if "--json" in argv:
         json_out = argv[argv.index("--json") + 1]
+    required_columns = None
+    if "--required" in argv:
+        required_columns = argv[argv.index("--required") + 1].split(",")
 
     rows, columns = load_csv(path)
     issues = run_all_rules(rows, columns)
+    if required_columns:
+        issues += check_required_fields(rows, columns, required_columns)
 
     print(f"Dataset: {path}")
     print(f"Baris data: {len(rows)}  |  Kolom: {len(columns)}")

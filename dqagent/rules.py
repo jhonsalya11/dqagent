@@ -219,12 +219,200 @@ def check_type_consistency(rows: list[dict], columns: list[str]) -> list[Issue]:
     return issues
 
 
+def _to_float(val: str) -> float | None:
+    cleaned = val.replace(",", "").strip()
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+_MOJIBAKE_MARKERS = ("Ã", "Â", "â€", "\ufffd")
+
+
+def check_encoding(rows: list[dict], columns: list[str]) -> list[Issue]:
+    """Rule 5: flag mojibake / replacement-character artifacts from bad encoding."""
+    issues: list[Issue] = []
+    for col in columns:
+        for i, row in enumerate(rows, start=1):
+            raw = row.get(col)
+            if not raw:
+                continue
+            if "\ufffd" in raw or any(marker in raw for marker in _MOJIBAKE_MARKERS):
+                issues.append(
+                    Issue(
+                        row=i,
+                        column=col,
+                        rule="encoding",
+                        message="Nilai mengandung karakter mencurigakan (kemungkinan salah encoding/mojibake)",
+                        value=raw,
+                    )
+                )
+    return issues
+
+
+def check_outliers(rows: list[dict], columns: list[str]) -> list[Issue]:
+    """Rule 7: flag numeric outliers using the IQR method (1.5x fence)."""
+    issues: list[Issue] = []
+    for col in columns:
+        parsed = [(i, _to_float((row.get(col) or "").strip())) for i, row in enumerate(rows, start=1)]
+        values = sorted(v for _, v in parsed if v is not None)
+        if len(values) < 4:
+            continue  # not enough data to compute a meaningful IQR
+        q1 = values[len(values) // 4]
+        q3 = values[(len(values) * 3) // 4]
+        iqr = q3 - q1
+        if iqr == 0:
+            continue
+        lower = q1 - 1.5 * iqr
+        upper = q3 + 1.5 * iqr
+        for i, v in parsed:
+            if v is not None and (v < lower or v > upper):
+                issues.append(
+                    Issue(
+                        row=i,
+                        column=col,
+                        rule="outlier",
+                        message=f"Nilai {v:g} di luar rentang wajar ({lower:.1f} s/d {upper:.1f})",
+                        value=v,
+                    )
+                )
+    return issues
+
+
+def _region_like(column_name: str) -> bool:
+    name = column_name.lower()
+    return any(tok in name for tok in ("provinsi", "kabupaten", "kota", "wilayah", "daerah", "region"))
+
+
+def _similar(a: str, b: str) -> bool:
+    """Cheap near-duplicate check: same length-ish and most characters shared."""
+    if a == b:
+        return False  # identical isn't a typo issue
+    if abs(len(a) - len(b)) > 2:
+        return False
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    matches = sum(1 for ch in shorter if ch in longer)
+    return matches / max(len(shorter), 1) >= 0.8
+
+
+def check_region_consistency(rows: list[dict], columns: list[str]) -> list[Issue]:
+    """Rule 8: flag likely typos/variants in region-name columns (e.g. 'Jakata' vs 'Jakarta')."""
+    issues: list[Issue] = []
+    for col in columns:
+        if not _region_like(col):
+            continue
+        canonical_seen: list[str] = []
+        for i, row in enumerate(rows, start=1):
+            raw = (row.get(col) or "").strip()
+            if not raw or raw.lower() in MISSING_TOKENS:
+                continue
+            match = next((c for c in canonical_seen if _similar(raw.lower(), c.lower())), None)
+            if match:
+                issues.append(
+                    Issue(
+                        row=i,
+                        column=col,
+                        rule="region_consistency",
+                        message=f"Kemungkinan typo/variasi penulisan: '{raw}' vs '{match}'",
+                        value=raw,
+                        suggestion=match,
+                    )
+                )
+            else:
+                canonical_seen.append(raw)
+    return issues
+
+
+def check_required_fields(
+    rows: list[dict], columns: list[str], required_columns: list[str] | None = None
+) -> list[Issue]:
+    """Rule 9: flag rows missing a value in an explicitly-declared required column.
+
+    No-op (returns no issues) unless the caller passes `required_columns` —
+    "required" is a schema decision this tool can't infer on its own.
+    """
+    issues: list[Issue] = []
+    if not required_columns:
+        return issues
+    for col in required_columns:
+        if col not in columns:
+            continue
+        for i, row in enumerate(rows, start=1):
+            raw = (row.get(col) or "").strip()
+            if not raw or raw.lower() in MISSING_TOKENS:
+                issues.append(
+                    Issue(
+                        row=i,
+                        column=col,
+                        rule="required_field",
+                        message=f"Kolom wajib '{col}' kosong",
+                        value=raw,
+                    )
+                )
+    return issues
+
+
+_UNIT_SUFFIX_RE = re.compile(r"[\d.,]+\s*([a-zA-Z%]+)$")
+_UNIT_PREFIX_RE = re.compile(r"^([a-zA-Z]+)\s*[\d.,]+")
+
+
+def _extract_unit(value: str) -> str | None:
+    m = _UNIT_SUFFIX_RE.match(value) or _UNIT_PREFIX_RE.match(value)
+    return m.group(1).lower() if m else None
+
+
+def check_unit_consistency(rows: list[dict], columns: list[str]) -> list[Issue]:
+    """Rule 10: flag columns that mix different unit suffixes/prefixes (e.g. 'kg' vs 'gram')."""
+    issues: list[Issue] = []
+    for col in columns:
+        units_seen: dict[str, int] = {}
+        per_row_unit: list[tuple[int, str | None]] = []
+        for i, row in enumerate(rows, start=1):
+            raw = (row.get(col) or "").strip()
+            if not raw or raw.lower() in MISSING_TOKENS:
+                per_row_unit.append((i, None))
+                continue
+            unit = _extract_unit(raw)
+            per_row_unit.append((i, unit))
+            if unit:
+                units_seen[unit] = units_seen.get(unit, 0) + 1
+
+        distinct_units = set(units_seen)
+        if len(distinct_units) < 2:
+            continue  # nothing to compare
+
+        majority_unit = max(units_seen, key=units_seen.get)
+        for i, unit in per_row_unit:
+            if unit and unit != majority_unit:
+                issues.append(
+                    Issue(
+                        row=i,
+                        column=col,
+                        rule="unit_consistency",
+                        message=(
+                            f"Unit '{unit}' tidak konsisten dengan mayoritas kolom ('{majority_unit}')"
+                        ),
+                        value=unit,
+                        suggestion=majority_unit,
+                    )
+                )
+    return issues
+
+
 ALL_RULES = [
     check_date_format,
     check_missing_values,
     check_duplicate_rows,
     check_whitespace_casing,
     check_type_consistency,
+    check_encoding,
+    check_outliers,
+    check_region_consistency,
+    check_unit_consistency,
+    # check_required_fields deliberately excluded from ALL_RULES — it needs
+    # an explicit `required_columns` schema from the caller, so it only runs
+    # when invoked directly (see cli.py --required flag).
 ]
 
 
