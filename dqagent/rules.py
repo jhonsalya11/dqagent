@@ -98,23 +98,54 @@ def check_date_format(rows: list[dict], columns: list[str]) -> list[Issue]:
     return issues
 
 
-def check_missing_values(rows: list[dict], columns: list[str]) -> list[Issue]:
-    """Rule 2: flag missing/empty values, including inconsistent 'missing' tokens."""
+def check_missing_values(rows: list[dict], columns: list[str], column_skip_threshold: float = 0.8) -> list[Issue]:
+    """Rule 2: flag missing/empty values, including inconsistent 'missing' tokens.
+
+    Columns that are empty/missing in MORE than `column_skip_threshold` of rows
+    are reported as a SINGLE dataset-level observation instead of one Issue per
+    row — a column that's blank 500/500 times is one fact ("this column isn't
+    used/populated in this dataset"), not 500 separate problems. This was a
+    real false-positive source found testing against a real NYC DOB dataset
+    (see docs/research/2026-10-12-real-dataset-test-findings.md).
+    """
     issues: list[Issue] = []
+    if not rows:
+        return issues
     for col in columns:
-        for i, row in enumerate(rows, start=1):
-            raw = row.get(col)
-            normalized = (raw or "").strip().lower()
-            if normalized in MISSING_TOKENS:
-                issues.append(
-                    Issue(
-                        row=i,
-                        column=col,
-                        rule="missing_value",
-                        message=f"Nilai kosong/missing ('{raw}')",
-                        value=raw,
-                    )
+        missing_rows = [
+            i
+            for i, row in enumerate(rows, start=1)
+            if (row.get(col) or "").strip().lower() in MISSING_TOKENS
+        ]
+        if not missing_rows:
+            continue
+        missing_ratio = len(missing_rows) / len(rows)
+        if missing_ratio > column_skip_threshold:
+            issues.append(
+                Issue(
+                    row=-1,
+                    column=col,
+                    rule="missing_value",
+                    message=(
+                        f"Kolom '{col}' kosong di {len(missing_rows)}/{len(rows)} baris "
+                        f"({missing_ratio:.0%}) — kemungkinan kolom tidak relevan/tidak "
+                        "terpakai di dataset ini, bukan error per-baris"
+                    ),
+                    value=f"{missing_ratio:.0%} missing",
                 )
+            )
+            continue
+        for i in missing_rows:
+            raw = rows[i - 1].get(col)
+            issues.append(
+                Issue(
+                    row=i,
+                    column=col,
+                    rule="missing_value",
+                    message=f"Nilai kosong/missing ('{raw}')",
+                    value=raw,
+                )
+            )
     return issues
 
 
@@ -251,10 +282,25 @@ def check_encoding(rows: list[dict], columns: list[str]) -> list[Issue]:
     return issues
 
 
+def _is_id_like_column(column_name: str) -> bool:
+    """Heuristic: columns that look like identifiers, not measurable quantities."""
+    name = column_name.lower()
+    id_tokens = ("_id", "id_", "_no", "number", "bin", "code", "zip", "zipcode", "job_s1")
+    return name in ("id", "no") or any(tok in name for tok in id_tokens)
+
+
 def check_outliers(rows: list[dict], columns: list[str]) -> list[Issue]:
-    """Rule 7: flag numeric outliers using the IQR method (1.5x fence)."""
+    """Rule 7: flag numeric outliers using the IQR method (1.5x fence).
+
+    Skips columns that look like identifiers (job numbers, zip codes, BIN,
+    etc.) — an ID has no "statistically normal range", so IQR on it is
+    meaningless. Found via real dataset testing: job_s1_no was incorrectly
+    flagged as having outliers.
+    """
     issues: list[Issue] = []
     for col in columns:
+        if _is_id_like_column(col):
+            continue
         parsed = [(i, _to_float((row.get(col) or "").strip())) for i, row in enumerate(rows, start=1)]
         values = sorted(v for _, v in parsed if v is not None)
         if len(values) < 4:
@@ -356,10 +402,26 @@ def check_required_fields(
 _UNIT_SUFFIX_RE = re.compile(r"[\d.,]+\s*([a-zA-Z%]+)$")
 _UNIT_PREFIX_RE = re.compile(r"^([a-zA-Z]+)\s*[\d.,]+")
 
+# Explicit whitelist of real measurement units — NOT a generic "any word after
+# a number" match. The previous version flagged street names like "123 Main
+# Street" as unit "street"; found via real dataset testing (NYC DOB permits).
+_KNOWN_UNITS = {
+    "kg", "gram", "g", "mg", "ton",
+    "cm", "mm", "m", "km",
+    "rp", "idr", "usd", "$",
+    "l", "ml", "liter",
+    "kwh", "watt", "w",
+    "pct", "percent", "%",
+    "sqm", "m2", "sqft", "ha",
+}
+
 
 def _extract_unit(value: str) -> str | None:
     m = _UNIT_SUFFIX_RE.match(value) or _UNIT_PREFIX_RE.match(value)
-    return m.group(1).lower() if m else None
+    if not m:
+        return None
+    candidate = m.group(1).lower()
+    return candidate if candidate in _KNOWN_UNITS else None
 
 
 def check_unit_consistency(rows: list[dict], columns: list[str]) -> list[Issue]:
