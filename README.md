@@ -25,6 +25,7 @@ tetap direncanakan untuk tahap selanjutnya SETELAH budget cap disetujui terpisah
 
 ## Pakai
 
+### Lewat `python -m` (tanpa install)
 ```bash
 cd product
 pip install -r requirements.txt
@@ -33,6 +34,15 @@ python -m dqagent.cli path/to/dataset.csv --json laporan.json
 python -m dqagent.cli path/to/dataset.csv --html review.html
 python -m dqagent.cli path/to/dataset.csv --required nama,tanggal_lahir
 ```
+
+### Sebagai command terinstall (`pip install -e .`)
+```bash
+cd product
+pip install -e .
+dqagent path/to/dataset.csv --html review.html
+```
+Terverifikasi jalan di virtualenv bersih — entry point `dqagent` terdaftar
+lewat `pyproject.toml` (`[project.scripts]`).
 
 Output: ringkasan console, laporan JSON lengkap, atau **UI review interaktif**
 (`--html`) — file HTML statis, buka langsung di browser, tidak butuh server.
@@ -60,7 +70,9 @@ kalau diperlukan).
   resmi kode wilayah BPS — cocok buat nangkap typo kasar, bukan validasi
   administratif resmi
 - Rule 9 (required field) sengaja tidak otomatis — "wajib" itu keputusan
-  skema yang nggak bisa ditebak dari data saja
+  skema yang nggak bisa ditebak dari data saja. **Diverifikasi dengan
+  dataset nyata** (lihat `docs/research/2026-10-12-required-field-verification.md`):
+  0 false positive/negative pada 2 skenario uji
 - UI review masih client-side only (localStorage), belum ada LLM/semantic check
 
 ## Test
