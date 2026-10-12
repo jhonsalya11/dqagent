@@ -30,11 +30,27 @@ cd product
 pip install -r requirements.txt
 python -m dqagent.cli path/to/dataset.csv
 python -m dqagent.cli path/to/dataset.csv --json laporan.json
+python -m dqagent.cli path/to/dataset.csv --html review.html
 python -m dqagent.cli path/to/dataset.csv --required nama,tanggal_lahir
 ```
 
-Output: ringkasan console atau laporan JSON lengkap, TIDAK ada auto-delete —
-sesuai prinsip "explainable, human review per-item" di mockup UI.
+Output: ringkasan console, laporan JSON lengkap, atau **UI review interaktif**
+(`--html`) — file HTML statis, buka langsung di browser, tidak butuh server.
+TIDAK ada auto-delete — sesuai prinsip "explainable, human review per-item"
+di mockup UI.
+
+### UI Review (`--html`)
+
+Implementasi nyata dari mockup ASCII di deep research doc: tabel semua isu,
+filter per rule, dan tombol **Terima / Tolak / Belum** per baris. Keputusan
+disimpan di `localStorage` browser (per nama dataset) — **tidak ada server,
+tidak ada data terkirim ke mana pun**, nol spend. Tombol "Export keputusan"
+download hasil reviewnya sebagai JSON.
+
+Keterbatasan: keputusan tersimpan di browser lokal reviewer, bukan di
+database bersama — cocok buat 1 orang review 1 file, belum cocok untuk tim
+yang perlu lihat keputusan satu sama lain (itu butuh backend, fase berikutnya
+kalau diperlukan).
 
 ## Keterbatasan yang diketahui (jujur, biar nggak over-claim)
 
@@ -45,7 +61,7 @@ sesuai prinsip "explainable, human review per-item" di mockup UI.
   administratif resmi
 - Rule 9 (required field) sengaja tidak otomatis — "wajib" itu keputusan
   skema yang nggak bisa ditebak dari data saja
-- Belum ada UI visual (masih CLI/JSON), belum ada LLM/semantic check
+- UI review masih client-side only (localStorage), belum ada LLM/semantic check
 
 ## Test
 
@@ -54,4 +70,6 @@ cd product
 pytest tests/ -v
 ```
 
-12 test, semua rule punya minimal 1 test dengan fixture dataset realistis.
+18 test, semua rule + report generator punya minimal 1 test dengan fixture
+dataset realistis, plus regression test untuk bug yang ditemukan dari
+pengujian dataset nyata.

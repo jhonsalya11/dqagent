@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import sys
 from collections import Counter
 
+from .report import generate_html_report
 from .rules import check_required_fields, run_all_rules
 
 
@@ -22,7 +24,7 @@ def main(argv: list[str] | None = None) -> int:
     if not argv:
         print(
             "Usage: python -m dqagent.cli path/to/dataset.csv "
-            "[--json out.json] [--required col1,col2]"
+            "[--json out.json] [--html out.html] [--required col1,col2]"
         )
         return 1
 
@@ -30,6 +32,9 @@ def main(argv: list[str] | None = None) -> int:
     json_out = None
     if "--json" in argv:
         json_out = argv[argv.index("--json") + 1]
+    html_out = None
+    if "--html" in argv:
+        html_out = argv[argv.index("--html") + 1]
     required_columns = None
     if "--required" in argv:
         required_columns = argv[argv.index("--required") + 1].split(",")
@@ -47,11 +52,15 @@ def main(argv: list[str] | None = None) -> int:
     for rule, count in sorted(by_rule.items(), key=lambda kv: -kv[1]):
         print(f"  - {rule}: {count}")
 
+    if html_out:
+        generate_html_report(issues, os.path.basename(path), html_out)
+        print(f"Review UI (buka di browser): {html_out}")
+
     if json_out:
         with open(json_out, "w", encoding="utf-8") as f:
             json.dump([issue.to_dict() for issue in issues], f, indent=2, ensure_ascii=False)
         print(f"Laporan lengkap: {json_out}")
-    else:
+    elif not html_out:
         for issue in issues[:20]:
             print(f"  [row {issue.row}] {issue.column}: {issue.message}")
         if len(issues) > 20:
